@@ -1,34 +1,24 @@
 # -*- coding: utf-8 -*-
-"""
-Streamlit App: Expansión de Plan de Contratación
-
-Este script toma un archivo Excel 'Plan_Contratacion.xlsx' con columnas:
-- Horario
-- Tipo de Contrato
-- Día de Descanso
-- Personal a Contratar
-- (Opcional) Refrigerio
-
-Genera un plan expandido por agente, día, jornada, break y refrigerio.
-"""
+"""Streamlit App: Expansión de Plan de Contratación"""
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import math
-time
+import time
+from io import BytesIO
 
 st.set_page_config(page_title="Expansión Plan Contratación", layout="centered")
 st.title("Expansión de Plan de Contratación")
 
-# Paso 1: Subir el archivo de plan original
-df_uploaded = st.file_uploader("Sube tu Plan_Contratacion.xlsx", type=["xlsx"]) 
-if not df_uploaded:
+# Subida del archivo
+uploaded = st.file_uploader("Sube tu Plan_Contratacion.xlsx", type=["xlsx"])
+if not uploaded:
     st.info("Por favor, sube el archivo de Plan_Contratacion.xlsx para continuar.")
     st.stop()
 
-# Leer Plan_Contratacion.xlsx
-df = pd.read_excel(df_uploaded)
+# Lectura de datos
+df = pd.read_excel(uploaded)
 
 # --------------------------------------------------------------
 # 2. DEFINICIÓN DE TURNOS  (diccionario completo)
@@ -148,7 +138,6 @@ def get_shift_details(name):
     total = sum(cov)
     if total == 0:
         return "-", "-"
-    # Duplicar para ventana circular
     ext = cov + cov
     best = None
     for start in range(24):
@@ -157,25 +146,22 @@ def get_shift_details(name):
             if ext[end] == 1:
                 ones += 1
             if ones == total:
-                length = end - start + 1
-                best = (length, start)
+                best = (end - start + 1, start)
                 break
         if best:
             break
     length, start = best
-    sh = start % 24
-    eh = (start + length) % 24
-    # Buscar break interno
+    sh, eh = start % 24, (start + length) % 24
     brk = "-"
     for i in range(start, start + length - 1):
-        if ext[i] == 1 and ext[i+1] == 0 and ext[i+2 if i+2 < len(ext) else (i+2)%24] == 1:
+        if ext[i] == 1 and ext[i+1] == 0 and ext[(i+2) % len(ext)] == 1:
             gap = (i+1) % 24
             brk = f"{gap:02d}:00-{(gap+1)%24:02d}:00"
             break
     jornada = f"{sh:02d}:00-{eh:02d}:00"
     return jornada, brk
 
-# Procesar plan y expandir filas
+# Generar filas expandidas
 data = []
 for _, row in df.iterrows():
     turno = row['Horario']
@@ -208,22 +194,26 @@ for _, row in df.iterrows():
                     'Refrigerio': ref
                 })
 
+# DataFrame resultante
 expanded_df = pd.DataFrame(data)
 expanded_df['Jornada'] = expanded_df['Jornada'].str.replace('24:00','00:00')
 
+# Mostrar y descargar
 st.success("Plan expandido generado exitosamente.")
 st.dataframe(expanded_df)
 
-# Botón de descarga
-def convert_df(df):
-    return df.to_excel(index=False)
+def to_excel_bytes(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
 output_name = f"plan_final_{time.strftime('%Y%m%d_%H%M%S')}.xlsx"
+excel_bytes = to_excel_bytes(expanded_df)
 
-excel_data = convert_df(expanded_df)
 st.download_button(
     "Descargar plan final",
-    data=excel_data,
+    data=excel_bytes,
     file_name=output_name,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
