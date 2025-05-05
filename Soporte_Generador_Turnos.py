@@ -22,7 +22,7 @@ df = pd.read_excel(uploaded)
 # 3. Días de la semana
 dias = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
 
-# 4. Diccionario de turnos (sin modificar)
+# 4. Tu diccionario de cobertura original
 shifts_coverage = {
     # ----------------------------------------------------------
     # TURNOS FULL‑TIME 8H
@@ -131,37 +131,22 @@ shifts_coverage = {
 
 # 5. Función para calcular jornada y break
 @st.cache_data
-def get_shift_details(name: str, contract_type: str):
-    # --- Part Time 4h ---
+def get_shift_details(name: str):
+    # --- Part Time 4h (“_4”) sin break ---
     if name.endswith("_4"):
         hh = int(name.split("_")[0])
         sh = hh
         eh = (hh + 4) % 24
         return f"{sh:02d}:00-{eh:02d}:00", "-"
-    
-    # --- Full Time 8h ---
-    if contract_type.startswith("Full Time"):
-        parts = name.split("_")
-        # esperamos algo como ["FT","01:00","2"]
-        if parts[0] == "FT":
-            hh, mm = map(int, parts[1].split(":"))
-            sh = hh
-            eh = (hh + 8) % 24
-            # break fijo de 1h a la mitad
-            brk_start = (sh + 4) % 24
-            brk_end   = (brk_start + 1) % 24
-            jornada = f"{sh:02d}:{mm:02d}-{eh:02d}:{mm:02d}"
-            brk     = f"{brk_start:02d}:{mm:02d}-{brk_end:02d}:{mm:02d}"
-            return jornada, brk
 
-    # --- Resto de turnos: usamos coverage dict ---
+    # --- Resto de turnos (incluye todos los FT) ---
     cov = shifts_coverage.get(name, [0]*24)
     total = sum(cov)
     if total == 0:
         return "-", "-"
     ext = cov + cov
 
-    # buscamos bloque contiguo de longitud total
+    # buscamos un bloque contiguo que cubra 'total' horas
     best = None
     for start in range(24):
         if cov[start] != 1:
@@ -173,13 +158,15 @@ def get_shift_details(name: str, contract_type: str):
             best = (length, start)
             break
     if not best:
-        # fallback: primer 1
+        # fallback: arrancar en la primera '1'
         first = cov.index(1)
         best = (total, first)
     length, start = best
 
+    # calculamos inicio y fin
     sh, eh = start, (start + length) % 24
-    # buscar break intermedio (solo FT “old style”)
+
+    # buscamos un break intermedio: 1h donde haya 1→0→1
     brk = "-"
     for i in range(start, start + length - 1):
         if ext[i] == 1 and ext[i+1] == 0 and ext[i+2] == 1:
@@ -197,16 +184,14 @@ for _, row in df.iterrows():
     contrato   = row['Tipo de Contrato']
     dso        = row['Día de Descanso']
     n_personal = int(row['Personal a Contratar'])
-    # refrigerio solo para FT según tu lógica original
     ref = row.get('Refrigerio', '-') if contrato.startswith('Full Time') else '-'
 
-    jornada, brk = get_shift_details(turno, contrato)
+    jornada, brk = get_shift_details(turno)
 
     for i in range(1, n_personal + 1):
         agente = f"{turno}-{i}"
         for dia in dias:
             if dia == dso:
-                # día de descanso
                 data.append({
                     'Agente': agente,
                     'Turno': turno,
