@@ -22,7 +22,7 @@ df = pd.read_excel(uploaded)
 # 3. Días de la semana
 dias = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
 
-# 4. Tu diccionario de cobertura original
+# 4. Diccionario de cobertura de turnos (usa tu definición completa aquí)
 shifts_coverage = {
     # ----------------------------------------------------------
     # TURNOS FULL‑TIME 8H
@@ -129,14 +129,14 @@ shifts_coverage = {
     "23_4":[1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
 }
 
-# 5. Función para calcular jornada y break
+# 5. Función corregida para calcular jornada y break
 @st.cache_data
 def get_shift_details(name: str):
-    # --- Part Time 4h (“_4”) sin break ---
+    # --- Part Time 4h: fin = inicio + 4h, sin break ---
     if name.endswith("_4"):
-        hh = int(name.split("_")[0])
-        sh = hh
-        eh = (hh + 4) % 24
+        start_h = int(name.split("_")[0])
+        sh = start_h
+        eh = (start_h + 4) % 24
         return f"{sh:02d}:00-{eh:02d}:00", "-"
 
     # --- Resto de turnos (incluye todos los FT) ---
@@ -146,7 +146,7 @@ def get_shift_details(name: str):
         return "-", "-"
     ext = cov + cov
 
-    # buscamos un bloque contiguo que cubra 'total' horas
+    # buscar bloque contiguo de longitud 'total'
     best = None
     for start in range(24):
         if cov[start] != 1:
@@ -157,24 +157,35 @@ def get_shift_details(name: str):
         if length == total:
             best = (length, start)
             break
-    if not best:
-        # fallback: arrancar en la primera '1'
-        first = cov.index(1)
-        best = (total, first)
-    length, start = best
+    if best:
+        length, start = best
+    else:
+        start = cov.index(1)
+        length = total
 
-    # calculamos inicio y fin
-    sh, eh = start, (start + length) % 24
+    # hora de inicio y fin de trabajo
+    sh = start
+    end_work = (start + length) % 24
 
-    # buscamos un break intermedio: 1h donde haya 1→0→1
+    # detectar break (hueco 1→0→1 de 1h)
     brk = "-"
     for i in range(start, start + length - 1):
         if ext[i] == 1 and ext[i+1] == 0 and ext[i+2] == 1:
-            gap = (i+1) % 24
-            brk = f"{gap:02d}:00-{(gap+1)%24:02d}:00"
+            bsh = (i + 1) % 24
+            beh = (bsh + 1) % 24
+            brk = f"{bsh:02d}:00-{beh:02d}:00"
             break
 
-    jornada = f"{sh:02d}:00-{eh:02d}:00"
+    # si hay break, sumamos su duración al fin de jornada
+    if brk != "-":
+        bsh = int(brk.split(":")[0])
+        beh = int(brk.split("-")[1].split(":")[0])
+        break_len = (beh - bsh) % 24
+        end_full = (end_work + break_len) % 24
+    else:
+        end_full = end_work
+
+    jornada = f"{sh:02d}:00-{end_full:02d}:00"
     return jornada, brk
 
 # 6. Generar plan expandido
@@ -184,6 +195,7 @@ for _, row in df.iterrows():
     contrato   = row['Tipo de Contrato']
     dso        = row['Día de Descanso']
     n_personal = int(row['Personal a Contratar'])
+    # refrigerio solo para FT
     ref = row.get('Refrigerio', '-') if contrato.startswith('Full Time') else '-'
 
     jornada, brk = get_shift_details(turno)
@@ -215,11 +227,11 @@ for _, row in df.iterrows():
 expanded_df = pd.DataFrame(data)
 expanded_df['Jornada'] = expanded_df['Jornada'].str.replace('24:00','00:00')
 
-# 7. Mostrar y descargar
+# 7. Mostrar y botón de descarga
 st.success("Plan expandido generado exitosamente.")
 st.dataframe(expanded_df)
 
-def to_excel_bytes(df):
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
