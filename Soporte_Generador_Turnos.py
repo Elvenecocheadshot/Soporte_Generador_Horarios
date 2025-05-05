@@ -4,25 +4,25 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import math
 import time
 from io import BytesIO
 
 st.set_page_config(page_title="Expansión Plan Contratación", layout="centered")
 st.title("Expansión de Plan de Contratación")
 
-# Subida del archivo
+# 1. Subida del archivo
 uploaded = st.file_uploader("Sube tu Plan_Contratacion.xlsx", type=["xlsx"])
 if not uploaded:
     st.info("Por favor, sube el archivo de Plan_Contratacion.xlsx para continuar.")
     st.stop()
 
-# Lectura de datos
+# 2. Lectura de datos
 df = pd.read_excel(uploaded)
 
-# --------------------------------------------------------------
-# 2. DEFINICIÓN DE TURNOS  (diccionario completo)
-# --------------------------------------------------------------
+# 3. Días de la semana
+dias = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
+
+# 4. Diccionario de turnos (sin modificar)
 shifts_coverage = {
     # ----------------------------------------------------------
     # TURNOS FULL‑TIME 8H
@@ -129,51 +129,84 @@ shifts_coverage = {
     "23_4":[1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
 }
 
-
-dias = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
-
+# 5. Función para calcular jornada y break
 @st.cache_data
-def get_shift_details(name):
+def get_shift_details(name: str, contract_type: str):
+    # --- Part Time 4h ---
+    if name.endswith("_4"):
+        hh = int(name.split("_")[0])
+        sh = hh
+        eh = (hh + 4) % 24
+        return f"{sh:02d}:00-{eh:02d}:00", "-"
+    
+    # --- Full Time 8h ---
+    if contract_type.startswith("Full Time"):
+        parts = name.split("_")
+        # esperamos algo como ["FT","01:00","2"]
+        if parts[0] == "FT":
+            hh, mm = map(int, parts[1].split(":"))
+            sh = hh
+            eh = (hh + 8) % 24
+            # break fijo de 1h a la mitad
+            brk_start = (sh + 4) % 24
+            brk_end   = (brk_start + 1) % 24
+            jornada = f"{sh:02d}:{mm:02d}-{eh:02d}:{mm:02d}"
+            brk     = f"{brk_start:02d}:{mm:02d}-{brk_end:02d}:{mm:02d}"
+            return jornada, brk
+
+    # --- Resto de turnos: usamos coverage dict ---
     cov = shifts_coverage.get(name, [0]*24)
     total = sum(cov)
     if total == 0:
         return "-", "-"
     ext = cov + cov
+
+    # buscamos bloque contiguo de longitud total
     best = None
     for start in range(24):
-        ones = 0
-        for end in range(start, start+24):
-            if ext[end] == 1:
-                ones += 1
-            if ones == total:
-                best = (end - start + 1, start)
-                break
-        if best:
+        if cov[start] != 1:
+            continue
+        length = 1
+        while length < total and ext[start + length] == 1:
+            length += 1
+        if length == total:
+            best = (length, start)
             break
+    if not best:
+        # fallback: primer 1
+        first = cov.index(1)
+        best = (total, first)
     length, start = best
-    sh, eh = start % 24, (start + length) % 24
+
+    sh, eh = start, (start + length) % 24
+    # buscar break intermedio (solo FT “old style”)
     brk = "-"
     for i in range(start, start + length - 1):
-        if ext[i] == 1 and ext[i+1] == 0 and ext[(i+2) % len(ext)] == 1:
+        if ext[i] == 1 and ext[i+1] == 0 and ext[i+2] == 1:
             gap = (i+1) % 24
             brk = f"{gap:02d}:00-{(gap+1)%24:02d}:00"
             break
+
     jornada = f"{sh:02d}:00-{eh:02d}:00"
     return jornada, brk
 
-# Generar filas expandidas
+# 6. Generar plan expandido
 data = []
 for _, row in df.iterrows():
-    turno = row['Horario']
-    contrato = row['Tipo de Contrato']
-    dso = row['Día de Descanso']
+    turno      = row['Horario']
+    contrato   = row['Tipo de Contrato']
+    dso        = row['Día de Descanso']
     n_personal = int(row['Personal a Contratar'])
+    # refrigerio solo para FT según tu lógica original
     ref = row.get('Refrigerio', '-') if contrato.startswith('Full Time') else '-'
-    jornada, brk = get_shift_details(turno)
-    for i in range(1, n_personal+1):
+
+    jornada, brk = get_shift_details(turno, contrato)
+
+    for i in range(1, n_personal + 1):
         agente = f"{turno}-{i}"
         for dia in dias:
             if dia == dso:
+                # día de descanso
                 data.append({
                     'Agente': agente,
                     'Turno': turno,
@@ -194,11 +227,10 @@ for _, row in df.iterrows():
                     'Refrigerio': ref
                 })
 
-# DataFrame resultante
 expanded_df = pd.DataFrame(data)
 expanded_df['Jornada'] = expanded_df['Jornada'].str.replace('24:00','00:00')
 
-# Mostrar y descargar
+# 7. Mostrar y descargar
 st.success("Plan expandido generado exitosamente.")
 st.dataframe(expanded_df)
 
